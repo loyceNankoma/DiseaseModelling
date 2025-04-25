@@ -1,0 +1,406 @@
+---
+title: "project1"
+author: "Nankoma"
+date: "2024-06-05"
+output: html_document
+---
+
+Loading the required packages
+```{r}
+library(deSolve)
+```
+
+Writing the differential equations.
+```{r}
+seir_equations <- function(time, variables, parameters) {
+  with(as.list(c(variables, parameters)), {
+    dS <- -beta * I * S
+    dE <-  beta * I * S  - rho * E
+    dI <-  rho * E - gamma * I
+    dR <-  gamma * I
+    return(list(c(dS, dE, dI, dR)))
+  })
+}
+```
+
+Defining some values for the parameters
+
+```{r}
+N = 42000001
+parameters_values <- c(
+  beta  = 0.5/ N, # infectious contact rate (/person/day)
+  rho = 1/3.3, # 1/latency period
+  gamma = 1/10    # recovery rate (/day)
+)
+```
+
+Defining initial values for the variables
+```{r}
+initial_values <- c(
+  S = 42000000,  # number of susceptibles at time = 0
+  E = 0, # number of exposed individuals at time = 0
+  I =   1,  # number of infectious at time = 0
+  R =   0   # number of recovered (and immune) at time = 0
+)
+```
+
+The points in time where to calculate variable values
+```{r}
+time_values <- seq(0, 200) # days
+```
+
+### Numerically solving the SIR model
+Using the ode() of `deSolve` package to numerically solve the model
+```{r}
+seir_values_1 <- ode(
+  y = initial_values,
+  times = time_values,
+  func = seir_equations,
+  parms = parameters_values 
+)
+```
+
+Checking the calculated values
+```{r}
+seir_values_1 <- as.data.frame(seir_values_1)
+seir_values_1
+```
+Plotting the model
+```{r}
+with(seir_values_1, {
+# plotting the time series of susceptibles:
+  plot(time, S, type = "l", col = "blue",
+       xlab = "time (days)", ylab = "number of people")
+# adding the time series of exposed:
+  lines(time, E, col = "orange")
+# adding the time series of infectious:
+  lines(time, I, col = "red")
+# adding the time series of recovered:
+  lines(time, R, col = "green")
+})
+
+# adding a legend:
+legend("right", c("susceptibles", "exposed", "infectious", "recovered"),
+       col = c("blue", "orange", "red", "green"), lty = 1, bty = "n")
+```
+
+R0 value
+```{r}
+(42000000 + 1) * parameters_values["beta"] / parameters_values["gamma"]
+```
+
+### Writing the simulator
+```{r}
+seir_1 <- function(beta, rho, gamma, S0, E0, I0, R0, times) {
+  require(deSolve) # for the "ode" function
+  
+# the differential equations:
+  seir_equations <- function(time, variables, parameters) {
+  with(as.list(c(variables, parameters)), {
+    dS <- -beta * I * S
+    dE <-  beta * I * S - rho * E
+    dI <-  rho * E - gamma * I
+    dR <-  gamma * I
+    return(list(c(dS, dE, dI, dR)))
+  })
+  }
+  
+# the parameters values:
+  parameters_values <- c(beta  = beta, rho = rho, gamma = gamma)
+
+# the initial values of variables:
+  initial_values <- c(S = S0, E = E0, I = I0, R = R0)
+  
+# solving
+  out <- ode(initial_values, times, seir_equations, parameters_values, maxsteps = 100000)
+
+# returning the output:
+  as.data.frame(out)
+}
+```
+
+```{r}
+seir_1(beta  = 0.5/ N, rho = 1/3.3, gamma = 1/10, S0 = 42000000, E0 = 0, I0 = 1, R0 = 0, times = seq(0, 200))
+```
+### Comparing the model's prediction with data
+```{r}
+data <- read.csv("data/owid-covid-data.csv")
+```
+
+
+```{r}
+ug_data <- data[data$iso_code == "UGA",]
+```
+
+```{r}
+library(lubridate)
+day0 = as.Date(ug_data$date[1])
+ug_data["day"] <- as.numeric(difftime(as.POSIXct(as.Date(ug_data$date)), as.POSIXct(day0), units =  "days"))
+```
+
+```{r}
+uganda <- subset(ug_data, select = c("day", "new_cases"))
+head(uganda)
+```
+
+
+```{r}
+# Identify outliers        
+outliers <- boxplot(uganda$new_cases, plot = FALSE)$out
+#[1]  33.9 100.0
+
+# Remove outliers
+ug_new<- uganda[!(uganda$new_cases %in% outliers), ]
+```
+
+Checking for missing values
+```{r}
+which(is.na(ug_new))
+```
+
+Removing missing values
+```{r}
+ug_new <- na.omit(ug_new)
+```
+
+```{r}
+which(is.na(ug_new))
+```
+
+
+```{r}
+library("ggplot2")
+ggplot(ug_new, mapping = aes(x = day, y = new_cases)) +
+  geom_line() + geom_point()
+```
+
+Subsetting
+```{r}
+ug_new1 <- ug_new[200:750,]
+```
+
+
+Plotting the covid data set against the model's predictions
+```{r}
+with(ug_new1, plot(day, new_cases, pch = 19, col = "red", ylim = c(0, 400)))
+predictions <- seir_1(beta  = 0.5/ N, rho = 1/3.3, gamma = 1/10, S0 = 42000000, E0 = 0, I0 = 1, R0 = 0, times = ug_new1$day)
+with(predictions, lines(time, I, col = "red"))
+```
+Function to take in parameters and plot figure as output
+```{r}
+model_fit <- function(beta, rho, gamma, data, N = 42000001, ...) {
+  I0 <- data$new_cases[1] # initial number of infected (from data)
+  times <- data$day   # time points (from data)
+# model's predictions:
+  predictions <- seir_1(beta = beta, rho = rho, gamma = gamma, 
+                        S0 = N - I0, E = 0, I0 = I0, R0 = 0,
+                        times = times)
+  
+# plotting the observed prevalences:
+  with(data, plot(day, new_cases, ...))
+# adding the model-predicted prevalence:
+  with(predictions, lines(time, I, col = "red"))
+}
+```
+
+```{r}
+model_fit(beta  = 0.5/ N, rho = 1/3.3, gamma = 1/10, ug_new1, pch = 19, col = "red", ylim = c(0, 400))
+```
+
+### Estimating the model's parameters
+Using Sum of squares
+```{r}
+predictions <- seir_1(beta  = 0.5/ N, rho = 1/3.3, gamma = 1/10, S0 = 42000000, E0 = 0, I0 = 1, R0 = 0, times = ug_new1$day)
+predictions
+```
+Sum of Squares
+```{r}
+sum((predictions$I - ug_new1$new_cases)^2)
+```
+
+```{r}
+# the observed prevalences:
+with(ug_new1, plot(day, new_cases, pch = 19, col = "red", ylim = c(0, 10000000)))
+# the model-predicted prevalences:
+with(predictions, lines(time, I, col = "red", type = "o"))
+# the "errors":
+segments(ug_new1$day, ug_new1$new_cases, predictions$time, predictions$I)
+```
+Function that takes parameters and data set and returns sum of squares
+```{r}
+ss <- function(beta, rho, gamma, data = ug_new1, N = 42000001) {
+  I0 <- data$new_cases[1]
+  times <- data$day
+  predictions <- seir_1(beta = beta, rho = rho, gamma = gamma,   # parameters
+                       S0 = N - I0, E0 = 0, I0 = I0, R0 = 0, # variables' intial values
+                       times = times)                # time points
+  sum((predictions$I[-1] - data$new_cases[-1])^2)
+}
+```
+
+```{r}
+ss(beta  = 0.5/ N, rho = 1/3.3, gamma = 1/10)
+```
+
+Find possible values of beta
+```{r}
+beta_val <- seq(from = 0, to = 0.5/ N, le = 100)
+ss_val <- sapply(beta_val, ss, rho = 1/3.3, gamma = 1/10)
+```
+
+Minimum value of the sum of squares
+```{r}
+min_ss_val <- min(ss_val)
+min_ss_val
+```
+
+Estimate of infectious contact, beta_val vector that corresponds to the minimum value of the sum of squares
+```{r}
+beta_hat <- beta_val[ss_val == min_ss_val]
+beta_hat
+```
+
+Visually
+```{r}
+plot(beta_val, ss_val, type = "l", lwd = 2,
+     xlab = expression(paste("infectious contact rate ", beta)),
+     ylab = "sum of squares")
+# adding the minimal value of the sum of squares:
+abline(h = min_ss_val, lty = 2, col = "grey")
+# adding the estimate of beta:
+abline(v = beta_hat, lty = 2, col = "grey")
+```
+Checking for minimum rho
+```{r}
+rho_val <- seq(from = 0.03, to = 3, le = 100)
+ss_val <- sapply(rho_val, function(x) ss(beta_hat, gamma = 1/10, x))
+(min_ss_val <- min(ss_val))
+```
+```{r}
+(rho_hat <- rho_val[ss_val == min_ss_val])
+```
+
+```{r}
+plot(rho_val, ss_val, type = "l", lwd = 2,
+     xlab = expression(paste("1/latent period ", rho)),
+     ylab = "sum of squares")
+abline(h = min_ss_val, lty = 2, col = "grey")
+abline(v = rho_hat, lty = 2, col = "grey")
+```
+
+Doing the same for recovery rate, gamma
+```{r}
+gamma_val <- seq(from = 0.01, to = 1, le = 100)
+ss_val <- sapply(gamma_val, function(x) ss(beta_hat, rho_hat, x))
+(min_ss_val <- min(ss_val))
+```
+
+```{r}
+(gamma_hat <- gamma_val[ss_val == min_ss_val])
+```
+
+```{r}
+plot(gamma_val, ss_val, type = "l", lwd = 2,
+     xlab = expression(paste("recovery rate ", gamma)),
+     ylab = "sum of squares")
+abline(h = min_ss_val, lty = 2, col = "grey")
+abline(v = gamma_hat, lty = 2, col = "grey")
+```
+Optimisation
+```{r}
+ss(beta  = 0.5/ N, rho = 1/3.3, gamma = 1/10)
+```
+```{r}
+ss2 <- function(x) {
+  ss(beta = x[1], rho = x[2], gamma = x[3])
+}
+```
+
+```{r}
+ss2(c(0.5/ N, 1/3.3, 1/10))
+```
+Optimising
+```{r}
+starting_param_val <- c(2.525252e-09, 0.4, 0.15)
+ss_optim <- optim(starting_param_val, ss2)
+```
+
+```{r}
+ss_optim
+```
+
+```{r}
+ss_optim$par
+```
+
+
+```{r}
+N <- 42000001 # total population size
+time_points <- seq(min(ug_new1$day), max(ug_new1$day), le = 100) # vector of time points
+I0 <- ug_new1$new_cases[1] # initial number of infected
+param_hat <- ss_optim$par # parameters estimates
+# model's best predictions:
+best_predictions <- seir_1(beta = param_hat[1], rho = param_hat[2], gamma = param_hat[3],S0 = N - I0, E0 = 0, I0 = I0, R0 = 0, time_points)$I
+# confidence interval of the best predictions:
+cl <- 0.95 # confidence level
+cl <- (1 - cl) / 2
+lwr <- qnorm(p = cl, mean = best_predictions)
+upr <- qnorm(p = 1 - cl, mean = best_predictions)
+# layout of the plot:
+plot(time_points, time_points, ylim = c(0, max(upr)), type = "n",
+     xlab = "time (days)", ylab = "prevalence")
+# adding the predictions' confidence interval:
+sel <- time_points >= 1 # predictions start from the second data point
+polygon(c(time_points[sel], rev(time_points[sel])), c(upr[sel], rev(lwr[sel])),
+        border = NA, col = adjustcolor("red", alpha.f = 0.1))
+# adding the model's best predictions:
+lines(time_points, best_predictions, col = "red")
+# adding the observed data:
+with(ug_new1, points(day, new_cases, pch = 19, col = "red"))
+```
+```{r}
+N = 42000001
+parameters_values2 <- c(
+  beta  = 3.724879e-09,
+  rho = 4.000076e-01,
+  gamma = 1.500024e-01
+)
+```
+
+```{r}
+time_values <- seq(0, 500000) # days
+```
+
+```{r}
+seir_values_2 <- ode(
+  y = initial_values,
+  times = time_values,
+  func = seir_equations,
+  parms = parameters_values2 
+)
+```
+
+
+```{r}
+seir_values_2 <- as.data.frame(seir_values_2)
+seir_values_2
+```
+
+```{r}
+with(seir_values_2, {
+# plotting the time series of susceptibles:
+  plot(time, S, type = "l", col = "blue",
+       xlab = "time (days)", ylab = "number of people")
+# adding the time series of exposed:
+  lines(time, E, col = "orange")
+# adding the time series of infectious:
+  lines(time, I, col = "red")
+# adding the time series of recovered:
+  lines(time, R, col = "green")
+})
+
+# adding a legend:
+legend("right", c("susceptibles", "exposed", "infectious", "recovered"),
+       col = c("blue", "orange", "red", "green"), lty = 1, bty = "n")
+```
+
